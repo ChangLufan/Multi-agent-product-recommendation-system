@@ -25,10 +25,12 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import get_settings
+from agents import UserProfileAgent
 from models.schemas import RecommendationRequest, RecommendationResponse
 from orchestrator.supervisor import SupervisorOrchestrator
 from orchestrator.graph import build_recommendation_graph
 from services.ab_test import ABTestEngine
+from services.feature_store import FeatureStore
 from services.metrics import MetricsCollector
 
 logger = structlog.get_logger()
@@ -39,16 +41,51 @@ ab_engine = ABTestEngine()
 metrics_collector = MetricsCollector()
 supervisor = SupervisorOrchestrator(ab_engine=ab_engine)
 rec_graph = None
+feature_store: FeatureStore | None = None
+redis_client = None
 
 # 生命周期管理
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 启动时构建状态图
-    global rec_graph
-    rec_graph = build_recommendation_graph()  # 构建langgraph状态图
+    global rec_graph, feature_store, redis_client
+
+    # 尝试连接 Redis。失败时记录告警并以离线模式启动，画像 Agent 会走 context 兜底。
+    try:
+        from redis.asyncio import Redis as AsyncRedis
+
+        redis_client = AsyncRedis.from_url(
+            settings.redis_url,
+            encoding="utf-8",
+            decode_responses=True,
+            protocol=settings.redis_protocol,  # Redis 3.x 老版本必须用 RESP2（不发 HELLO）
+        )
+        await redis_client.ping()
+        feature_store = FeatureStore(
+            redis_client=redis_client,
+            ttl=settings.feature_ttl_seconds,
+        )
+        # 构造时显式注入（替代之前的"穿透赋值"），Supervisor 链路下的画像 Agent 即可见
+        supervisor.user_profile_agent = UserProfileAgent(feature_store=feature_store)
+        # 构建 LangGraph 状态图，同时注入 FeatureStore
+        rec_graph = build_recommendation_graph(feature_store=feature_store)
+        logger.info(
+            "redis.connected",
+            url=settings.redis_url,
+            ttl=settings.feature_ttl_seconds,
+        )
+    except Exception as exc:
+        logger.warning("redis.unavailable", error=str(exc))
+        redis_client = None
+        feature_store = None
+        # 即使 Redis 不可用，LangGraph 仍可启动（画像 Agent 自动走 context 兜底）
+        rec_graph = build_recommendation_graph(feature_store=None)
+
     logger.info("app.startup", model=settings.llm_model)
     yield
     # 关闭时做的
+    if redis_client is not None:
+        await redis_client.aclose()
     logger.info("app.shutdown")
 
 
@@ -73,6 +110,28 @@ app.add_middleware(
 @app.get("/health")
 async def health():
     return {"status": "healthy", "model": settings.llm_model}
+
+
+# 特征存储健康诊断
+@app.get("/api/v1/feature/health")
+async def feature_health():
+    """查看 FeatureStore 是否接通 Redis。仅做一次 PING，不下放真实用户特征。"""
+    if feature_store is None or redis_client is None:
+        return {
+            "status": "offline",
+            "mode": "context_fallback",
+            "redis_url": settings.redis_url,
+        }
+    try:
+        await redis_client.ping()
+        return {
+            "status": "online",
+            "mode": "feature_store",
+            "redis_url": settings.redis_url,
+            "ttl_seconds": feature_store.ttl,
+        }
+    except Exception as exc:
+        return {"status": "error", "error": str(exc)}
 
 
 @app.post("/api/v1/recommend", response_model=RecommendationResponse)

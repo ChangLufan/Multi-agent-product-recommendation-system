@@ -14,8 +14,9 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.7
     llm_max_tokens: int = 2048
 
-    # Redis
-    redis_url: str = "redis://localhost:6379/0"
+    # Redis（本地 Redis 3.2.100：带密码、需 RESP2 协议——老版本不认识 HELLO 命令）
+    redis_url: str = "redis://:123456@127.0.0.1:6379/0"
+    redis_protocol: int = 2  # redis-py 6.x 默认 RESP3 会发 HELLO，Redis<6.0 必须显式降为 2
     feature_ttl_seconds: int = 86400
 
     # Milvus

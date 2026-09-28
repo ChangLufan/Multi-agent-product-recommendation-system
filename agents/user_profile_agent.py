@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import structlog
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 
@@ -22,6 +23,8 @@ from models.schemas import (
 )
 
 from .base_agent import BaseAgent
+
+logger = structlog.get_logger()
 
 SYSTEM_PROMPT = """你是一个电商用户画像分析专家。根据用户的行为数据,分析用户特征并生成画像。
 
@@ -38,7 +41,7 @@ SYSTEM_PROMPT = """你是一个电商用户画像分析专家。根据用户的�
 
 
 class UserProfileAgent(BaseAgent):
-    def __init__(self):
+    def __init__(self, feature_store: Any = None):
         settings = get_settings()
         super().__init__(
             name="user_profile",
@@ -49,9 +52,12 @@ class UserProfileAgent(BaseAgent):
             base_url=settings.llm_base_url,
             model=settings.llm_model,
             temperature=0.3,
-            max_tokens=1024,
+            # 思考型模型（如 glm-5.3）的思考过程也计入 max_tokens，
+            # 1024 会导致正文被截断成 '{\n'，画像解析必然失败
+            max_tokens=4096,
         )
-        self.feature_store: Any = None  # injected in Phase 2
+        # 显式依赖注入：构造时绑定，避免外部"穿透赋值"的脆弱性
+        self.feature_store = feature_store
 
     async def _execute(self, **kwargs: Any) -> UserProfileResult:
         # 透传获取用户信息
@@ -76,9 +82,21 @@ class UserProfileAgent(BaseAgent):
         )
 
     async def _collect_behavior(self, user_id: str, context: dict) -> dict:
-        """Collect user behavior from feature store or context fallback."""
-        if self.feature_store:
-            return await self.feature_store.get_user_features(user_id)
+        """Collect user behavior from feature store, falling back to context on any failure."""
+        if self.feature_store is not None:
+            try:
+                features = await self.feature_store.get_user_features(user_id)
+                # 即便 Redis 返回空字典，也走 context 兜底，避免给 LLM 一个完全无信号的输入
+                if features:
+                    return features
+            except Exception as exc:
+                # Redis 调用失败（断网、超时、KeyError 等）→ 静默降级到 context
+                logger.warning(
+                    "feature_store.read_failed",
+                    user_id=user_id,
+                    error=str(exc),
+                    fallback="context",
+                )
         return {
             "user_id": user_id,
             "recent_views": context.get("recent_views", ["手机", "耳机", "平板"]),

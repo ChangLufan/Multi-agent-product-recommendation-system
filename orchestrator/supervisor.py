@@ -46,8 +46,12 @@ logger = structlog.get_logger()
 class SupervisorOrchestrator:
     """Coordinates four agents in parallel-then-aggregate pattern."""
 
-    def __init__(self, ab_engine: ABTestEngine | None = None):
-        self.user_profile_agent = UserProfileAgent()
+    def __init__(
+        self,
+        ab_engine: ABTestEngine | None = None,
+        feature_store: Any | None = None,
+    ):
+        self.user_profile_agent = UserProfileAgent(feature_store=feature_store)
         self.product_rec_agent = ProductRecAgent()
         self.marketing_copy_agent = MarketingCopyAgent()
         self.inventory_agent = InventoryAgent()

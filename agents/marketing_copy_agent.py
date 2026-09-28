@@ -70,7 +70,8 @@ class MarketingCopyAgent(BaseAgent):
             base_url=settings.llm_base_url,
             model=settings.llm_model,
             temperature=0.9,
-            max_tokens=2048,
+            # 思考型模型（如 glm-5.3）的思考过程也计入 max_tokens，需留足正文预算
+            max_tokens=8192,
         )
 
     async def _execute(self, **kwargs: Any) -> MarketingCopyResult:

@@ -30,7 +30,7 @@ class BaseAgent(ABC):
         """Core logic implemented by each concrete agent."""
 
     # 外部调用入口，会进行重试和回退
-    async def run(self, **kwargs: Any) -> AgentResult:
+    async def run(self, **kwargs: Any) -> AgentResult:     # **kwargs为字典，包含接收到的各种参数，后续透传给各agent
         """Public entry: wraps _execute with timing, retries, and fallback."""
         start = time.perf_counter()   # 开始时间
         self._call_count += 1
@@ -60,7 +60,7 @@ class BaseAgent(ABC):
         )
         # 内部执行方法
         async def _inner():
-            return await self._execute(**kwargs)  #
+            return await self._execute(**kwargs)
 
         return await _inner()
     # 回退方法，当执行失败时调用

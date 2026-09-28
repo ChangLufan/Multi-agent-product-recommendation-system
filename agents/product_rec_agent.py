@@ -69,7 +69,9 @@ class ProductRecAgent(BaseAgent):
             base_url=settings.llm_base_url,
             model=settings.llm_model,
             temperature=0.3,
-            max_tokens=512,
+            # 思考型模型（如 glm-5.3）的思考过程也计入 max_tokens，
+            # 512 会导致 ID 数组被截断、解析失败后静默回退为原始顺序
+            max_tokens=4096,
         )
         self.vector_store: Any = None  # injected in Phase 2
 

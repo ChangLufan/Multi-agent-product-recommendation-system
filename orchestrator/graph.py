@@ -16,6 +16,7 @@ import time
 import uuid
 from typing import Any, TypedDict
 
+import structlog
 from langgraph.graph import END, StateGraph
 
 from agents import (
@@ -26,6 +27,8 @@ from agents import (
 )
 from models.schemas import Product, UserProfile
 from services.ab_test import ABTestEngine
+
+logger = structlog.get_logger()
 
 
 # 状态类型定义
@@ -49,7 +52,7 @@ class PipelineState(TypedDict, total=False):
     _start_time: float  # 开始时间
 
 
-# agent实例化对象初始化
+# agent实例化对象初始化（feature_store 在 build_recommendation_graph 时注入）
 user_profile_agent = UserProfileAgent()
 product_rec_agent = ProductRecAgent()
 marketing_copy_agent = MarketingCopyAgent()
@@ -61,9 +64,9 @@ ab_engine = ABTestEngine()
 async def init_node(state: PipelineState) -> PipelineState:
     state["request_id"] = str(uuid.uuid4())  # 请求id
     state["_start_time"] = time.perf_counter()  # 开始时间为当前时间
-    state["agent_results"] = {}
-    exp = ab_engine.assign(state["user_id"])
-    state["experiment_group"] = exp.get("group", "control")
+    state["agent_results"] = {}  # 用于存储各个agent的返回结果，先初始化
+    exp = ab_engine.assign(state["user_id"]) # 根据用户ID进行A/B测试分组
+    state["experiment_group"] = exp.get("group", "control") # 获取分组结果
     return state
 
 
@@ -98,7 +101,7 @@ async def parallel_phase1(state: PipelineState) -> PipelineState:
     state.update(recall_state)
     return state
 
-
+# 重排序节点
 async def rerank_node(state: PipelineState) -> PipelineState:
     result = await product_rec_agent.run(
         user_profile=state.get("user_profile"),  # 第二次携带用户画像调用商品推荐agent
@@ -108,7 +111,7 @@ async def rerank_node(state: PipelineState) -> PipelineState:
     state["agent_results"]["rerank"] = result
     return state
 
-
+# 库存检查节点
 async def inventory_node(state: PipelineState) -> PipelineState:
     result = await inventory_agent.run(
         products=state.get("raw_products", []),  # 对原始列表中的商品进行库存检查
@@ -155,8 +158,28 @@ async def aggregate_node(state: PipelineState) -> PipelineState:
     return state
 
 
-def build_recommendation_graph() -> StateGraph:
-    """Build and compile the LangGraph state graph."""
+def build_recommendation_graph(feature_store: Any = None) -> StateGraph:
+    """Build and compile the LangGraph state graph.
+
+    Args:
+        feature_store: Optional FeatureStore instance. When provided, it is
+            injected into the module-level user_profile_agent so the profile
+            node reads real Redis features instead of the context fallback.
+    """
+    if feature_store is not None:
+        user_profile_agent.feature_store = feature_store
+        logger.info(
+            "graph.feature_store_injected",
+            agent_id=id(user_profile_agent),
+            store_id=id(feature_store),
+        )
+    else:
+        logger.info(
+            "graph.feature_store_not_injected",
+            agent_id=id(user_profile_agent),
+            mode="context_fallback",
+        )
+
     graph = StateGraph(PipelineState)
 
     # 添加节点
