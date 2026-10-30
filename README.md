@@ -1,11 +1,8 @@
 # 多智能体电商推荐系统 — 学习指南
 
-> 项目路径：`D:/Users/小小凡/Desktop/开发/Agent/project/Mult-agent`
-> 技术栈：Python 3.12 + FastAPI + LangChain + LangGraph + Pydantic v2 + asyncio
-
 ---
 
-## 一、项目是什么
+## 一、项目介绍
 
 这是一个**多智能体电商推荐系统**：用户发起一次推荐请求，系统由一个「Supervisor 编排器」调度 4 个分工明确的 Agent，通过**并行 + 聚合**模式完成「画像 → 召回 → 重排 → 库存过滤 → 文案生成」的完整推荐流水线，并附带 A/B 测试与监控能力。
 
